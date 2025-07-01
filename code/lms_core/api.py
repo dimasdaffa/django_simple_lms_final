@@ -1,5 +1,6 @@
 from datetime import timedelta
-
+import jwt
+from django.conf import settings
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import User
 from django.db import IntegrityError
@@ -67,6 +68,7 @@ from ninja.pagination import PageNumberPagination, paginate
 from ninja.responses import Response
 from ninja_simple_jwt.auth.ninja_auth import HttpJwtAuth
 from ninja_simple_jwt.auth.views.api import mobile_auth_router
+from .models import CourseContent, CourseMember, Bookmark
 
 apiv1 = NinjaAPI()
 apiv1.add_router("/auth/", mobile_auth_router)
@@ -297,7 +299,31 @@ def enroll_in_course(request, course_id: int):
     """Enroll current user in a course with enrollment limit check"""
     try:
         course = Course.objects.get(id=course_id)
-        user = request.auth
+        
+        # AWAL PERBAIKAN: Dapatkan user dari token JWT
+        user = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                decoded_token = jwt.decode(
+                    token,
+                    settings.NINJA_JWT["VERIFYING_KEY"],
+                    algorithms=[settings.NINJA_JWT["ALGORITHM"]],
+                )
+                user_id = decoded_token.get("user_id")
+                if user_id:
+                    user = User.objects.get(id=user_id)
+            except jwt.ExpiredSignatureError:
+                return Response({"error": "Token has expired"}, status=401)
+            except jwt.InvalidTokenError:
+                return Response({"error": "Invalid token"}, status=401)
+            except User.DoesNotExist:
+                 return Response({"error": "User not found"}, status=404)
+
+        if not user:
+            return Response({"error": "Authentication failed"}, status=401)
+        # AKHIR PERBAIKAN
 
         if CourseMember.objects.filter(course_id=course, user_id=user).exists():
             return Response(
@@ -442,12 +468,34 @@ def moderate_comment(request, comment_id: int, approved: bool = True):
 @apiv1.post("/contents/{content_id}/complete", response=SuccessResponse, auth=apiAuth)
 def mark_content_complete(request, content_id: int):
     """Mark content as completed by current user"""
+    # ... (logika untuk mendapatkan user dari token sama seperti di atas) ...
+    user = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            decoded_token = jwt.decode(
+                token,
+                settings.NINJA_JWT["VERIFYING_KEY"],
+                algorithms=[settings.NINJA_JWT["ALGORITHM"]],
+            )
+            user_id = decoded_token.get("user_id")
+            if user_id:
+                user = User.objects.get(id=user_id)
+        except (jwt.InvalidTokenError, User.DoesNotExist):
+            return Response({"error": "Invalid token or user not found"}, status=401)
+    if not user:
+        return Response({"error": "Authentication failed"}, status=401)
+
     try:
         content = CourseContent.objects.get(id=content_id)
-        user = request.auth
+        
+        # === PERBAIKAN LOGIKA UTAMA ===
+        course = content.course_id
+        # =============================
 
         if not CourseMember.objects.filter(
-            course_id=content.course_id, user_id=user
+            course_id=course, user_id=user
         ).exists():
             return Response({"error": "User not enrolled in this course"}, status=403)
 
@@ -505,10 +553,31 @@ def get_course_progress(request, course_id: int):
 @apiv1.delete("/contents/{content_id}/complete", response=SuccessResponse, auth=apiAuth)
 def unmark_content_complete(request, content_id: int):
     """Remove completion mark from content"""
+    # === AWAL PERBAIKAN ===
+    user = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            decoded_token = jwt.decode(
+                token,
+                settings.NINJA_JWT["VERIFYING_KEY"],
+                algorithms=[settings.NINJA_JWT["ALGORITHM"]],
+            )
+            user_id = decoded_token.get("user_id")
+            if user_id:
+                user = User.objects.get(id=user_id)
+        except (jwt.InvalidTokenError, User.DoesNotExist):
+            return Response({"error": "Invalid token or user not found"}, status=401)
+            
+    if not user:
+        return Response({"error": "Authentication failed"}, status=401)
+    # === AKHIR PERBAIKAN ===
+
     try:
         content = CourseContent.objects.get(id=content_id)
-        user = request.auth
 
+        # Sekarang pengecekan ini akan berhasil karena `user` adalah objek yang benar
         if not CourseMember.objects.filter(
             course_id=content.course_id, user_id=user
         ).exists():
@@ -517,34 +586,62 @@ def unmark_content_complete(request, content_id: int):
         completion = CompletionTracking.objects.filter(
             user=user, content=content
         ).first()
+
         if completion:
             completion.delete()
             return {"message": "Completion mark removed"}
         else:
             return Response({"error": "Content not marked as completed"}, status=404)
+            
     except CourseContent.DoesNotExist:
         return Response({"error": "Content not found"}, status=404)
 
 
 # === BOOKMARKING ===
 @apiv1.post("/contents/{content_id}/bookmark", response=SuccessResponse, auth=apiAuth)
-def add_bookmark(request, content_id: int):
-    """Add content to bookmarks"""
-    try:
-        content = CourseContent.objects.get(id=content_id)
-        user = request.auth
+def bookmark_content(request, content_id: int):
+    """Bookmark a content for the current user"""
+    # 1. Dapatkan user dari token (logika ini sudah benar)
+    user = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            decoded_token = jwt.decode(
+                token,
+                settings.NINJA_JWT["VERIFYING_KEY"],
+                algorithms=[settings.NINJA_JWT["ALGORITHM"]],
+            )
+            user_id = decoded_token.get("user_id")
+            if user_id:
+                user = User.objects.get(id=user_id)
+        except (jwt.InvalidTokenError, User.DoesNotExist):
+            return Response({"error": "Invalid token or user not found"}, status=401)
 
-        if not CourseMember.objects.filter(
-            course_id=content.course_id, user_id=user
-        ).exists():
+    if not user:
+        return Response({"error": "Authentication failed"}, status=401)
+
+    try:
+        # 2. Ambil objek KONTEN menggunakan ID dari URL
+        content = CourseContent.objects.get(id=content_id)
+
+        # 3. KUNCI UTAMA: Dapatkan objek KURSUS dari relasi di model konten
+        # Model CourseContent memiliki foreign key 'course_id' ke model Course
+        course_object = content.course_id
+
+        # 4. Periksa apakah user terdaftar di KURSUS yang benar
+        is_member = CourseMember.objects.filter(course_id=course_object, user_id=user).exists()
+        if not is_member:
             return Response({"error": "User not enrolled in this course"}, status=403)
 
-        bookmark, created = Bookmark.objects.get_or_create(user=user, content=content)
+        # 5. Logika untuk membuat atau menghapus bookmark
+        bookmark, created = Bookmark.objects.get_or_create(content=content, user=user)
+        if not created:
+            bookmark.delete()
+            return {"message": "Bookmark removed"}
 
-        if created:
-            return {"message": "Content bookmarked successfully"}
-        else:
-            return {"message": "Content already bookmarked"}
+        return {"message": "Successfully bookmarked"}
+
     except CourseContent.DoesNotExist:
         return Response({"error": "Content not found"}, status=404)
 
@@ -610,16 +707,39 @@ def get_user_bookmarks(request):
 @apiv1.delete("/contents/{content_id}/bookmark", response=SuccessResponse, auth=apiAuth)
 def remove_bookmark(request, content_id: int):
     """Remove content from bookmarks"""
+    # === AWAL PERBAIKAN ===
+    user = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            decoded_token = jwt.decode(
+                token,
+                settings.NINJA_JWT["VERIFYING_KEY"],
+                algorithms=[settings.NINJA_JWT["ALGORITHM"]],
+            )
+            user_id = decoded_token.get("user_id")
+            if user_id:
+                user = User.objects.get(id=user_id)
+        except (jwt.InvalidTokenError, User.DoesNotExist):
+            return Response({"error": "Invalid token or user not found"}, status=401)
+    
+    if not user:
+        return Response({"error": "Authentication failed"}, status=401)
+    # === AKHIR PERBAIKAN ===
+
     try:
         content = CourseContent.objects.get(id=content_id)
-        user = request.auth
 
+        # Sekarang `user` adalah objek User yang benar
         bookmark = Bookmark.objects.filter(user=user, content=content).first()
+        
         if bookmark:
             bookmark.delete()
             return {"message": "Bookmark removed successfully"}
         else:
             return Response({"error": "Content not bookmarked"}, status=404)
+            
     except CourseContent.DoesNotExist:
         return Response({"error": "Content not found"}, status=404)
 
