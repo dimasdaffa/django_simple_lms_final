@@ -1,5 +1,5 @@
 django==5.1.6 # frameworknya
-psycopg2-binary==2.9.10 # driver postgres
+mysqlclient==2.2.4 # driver mysql
 pillow==11.1.0 # untuk mengolah gambar
 django-ninja==1.3.0
 django-ninja-simple-jwt==0.6.1
