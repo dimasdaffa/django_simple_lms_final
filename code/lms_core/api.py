@@ -101,74 +101,49 @@ def register_user(request, user_data: UserRegisterIn):
 # Implementasi GET profile - menampilkan profil user dengan statistik
 @apiv1.get("/user/profile", response=UserProfileOut, auth=apiAuth)
 def show_profile(request):
-    """Show current user's profile - FITUR 8 Part 1 (+1 Poin) - COMPLETELY FIXED"""
-    try:
-        # Get user from JWT token payload directly
-        user = None
-
-        # Method 1: Check if request has user attribute (Django standard)
-        if hasattr(request, "user") and hasattr(request.user, "id"):
-            user = request.user
-
-        # Method 2: If request.auth has user info, extract user ID from token
-        elif hasattr(request, "auth") and request.auth:
-            # Try to get user_id from JWT payload
-            try:
-                # Get the raw token from Authorization header
-                auth_header = request.headers.get("Authorization", "")
-                if auth_header.startswith("Bearer "):
-                    token = auth_header.split(" ")[1]
-
-                    # Decode token to get user_id
-                    import jwt
-                    from django.conf import settings
-
-                    decoded_token = jwt.decode(
-                        token,
-                        settings.NINJA_JWT["VERIFYING_KEY"],
-                        algorithms=[settings.NINJA_JWT["ALGORITHM"]],
-                    )
-
-                    user_id = decoded_token.get("user_id")
-                    if user_id:
-                        user = User.objects.get(id=user_id)
-
-            except Exception as e:
-                print(f"JWT decode error: {e}")
-                pass
-
-        # Method 3: Fallback - if nothing works, return error
-        if not user or not hasattr(user, "id"):
-            return Response(
-                {"error": "Authentication failed - unable to identify user"}, status=401
+    """Show current user's profile - FIXED VERSION"""
+    user = None
+    auth_header = request.headers.get("Authorization", "")
+    
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            # Decode token untuk mendapatkan user_id
+            decoded_token = jwt.decode(
+                token,
+                settings.NINJA_JWT["VERIFYING_KEY"],
+                algorithms=[settings.NINJA_JWT["ALGORITHM"]],
             )
+            user_id = decoded_token.get("user_id")
+            
+            # KUNCI UTAMA: Selalu ambil data terbaru dari database menggunakan user_id
+            if user_id:
+                user = User.objects.get(id=user_id)
 
-        # Hitung statistik user untuk dashboard insight dengan error handling
-        try:
-            courses_enrolled = CourseMember.objects.filter(
-                user_id=user, roles="std"
-            ).count()
-        except Exception:
-            courses_enrolled = 0
+        except (jwt.InvalidTokenError, User.DoesNotExist):
+            return Response({"error": "Invalid token or user not found"}, status=401)
 
-        try:
-            courses_teaching = Course.objects.filter(teacher=user).count()
-        except Exception:
-            courses_teaching = 0
+    if not user:
+        return Response({"error": "Authentication failed"}, status=401)
 
+    # Setelah mendapatkan objek user yang fresh, hitung statistiknya
+    try:
+        courses_enrolled = CourseMember.objects.filter(user_id=user, roles="std").count()
+        courses_teaching = Course.objects.filter(teacher=user).count()
+        
+        # Kembalikan data yang paling baru
         return {
             "id": user.id,
             "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name or "",
-            "last_name": user.last_name or "",
+            "email": user.email, # Ini akan berisi email terbaru
+            "first_name": user.first_name, # Ini akan berisi nama terbaru
+            "last_name": user.last_name, # Ini akan berisi nama terbaru
             "date_joined": user.date_joined,
             "total_courses_enrolled": courses_enrolled,
             "total_courses_teaching": courses_teaching,
         }
     except Exception as e:
         return Response({"error": f"Profile retrieval failed: {str(e)}"}, status=500)
-
 
 # FITUR 8: MANAJEMEN PROFIL PENGGUNA (+2 Poin) - COMPLETELY FIXED VERSION
 # Implementasi PUT profile - edit profil user dengan validasi
